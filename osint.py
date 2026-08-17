@@ -1,6 +1,8 @@
 # ============ FILE KA NAAM: osint_bot.py ============
 
 import logging
+from aiohttp import web
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import sqlite3
@@ -19,6 +21,41 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "5350926991").split(",") if x.strip()]
 API_URL = os.environ.get("API_URL", "https://dark-info.site/test/api.php?key=Demo&num={}")
 API_KEY = os.environ.get("API_KEY", "Demo")
+
+
+
+async def safe_edit(query, text, reply_markup=None, parse_mode='Markdown'):
+    """Safely edit message - ignore 'not modified' errors."""
+    try:
+        await safe_edit(query, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            pass
+        else:
+            try:
+                await safe_edit(query, text, reply_markup=reply_markup)
+            except:
+                pass
+
+
+def start_keepalive_server():
+    """Render Web Service ko port chahiye, isliye ek simple HTTP server chalate hain."""
+    async def health(request):
+        return web.Response(text="Bot is running! Developed by @ModAppsKing")
+    
+    app_web = web.Application()
+    app_web.router.add_get("/", health)
+    app_web.router.add_get("/health", health)
+    
+    port = int(os.environ.get("PORT", 10000))
+    web.run_app(app_web, host="0.0.0.0", port=port, print=lambda *a: None)
+
+
+def run_keepalive_in_thread():
+    """Keepalive server ko alag thread me chalao."""
+    server_thread = threading.Thread(target=start_keepalive_server, daemon=True)
+    server_thread.start()
+
 
 def init_db():
     if os.path.exists('osint_bot.db'):
@@ -443,19 +480,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     
     if query.data == 'search':
-        await query.edit_message_text("📞 **Send 10 digit number**\n\nExamples:\n`8084798673`\n`7991436925`\n`9116224238`\n\n⚠️ No +91 or country code needed\n\n💡 Each search costs 1 credit", parse_mode='Markdown')
+        await safe_edit(query, "📞 **Send 10 digit number**\n\nExamples:\n`8084798673`\n`7991436925`\n`9116224238`\n\n⚠️ No +91 or country code needed\n\n💡 Each search costs 1 credit", parse_mode='Markdown')
         context.user_data['waiting_for_number'] = True
     
     elif query.data == 'credits':
         credits = get_user_credits(user_id)
-        await query.edit_message_text(f"💰 **Your Credits:** `{credits}`\n\n💡 **How to earn:**\n• Referral: +5 credits\n• Redeem codes: +? credits", parse_mode='Markdown')
+        await safe_edit(query, f"💰 **Your Credits:** `{credits}`\n\n💡 **How to earn:**\n• Referral: +5 credits\n• Redeem codes: +? credits", parse_mode='Markdown')
     
     elif query.data == 'referral':
         ref_link = f"https://t.me/{context.bot.username}?start=ref_{user_id}"
-        await query.edit_message_text(f"👥 **Referral Link**\n\n`{ref_link}`\n\nShare this link with friends!\nYou get 5 credits per referral!", parse_mode='Markdown')
+        await safe_edit(query, f"👥 **Referral Link**\n\n`{ref_link}`\n\nShare this link with friends!\nYou get 5 credits per referral!", parse_mode='Markdown')
     
     elif query.data == 'redeem':
-        await query.edit_message_text("🎫 **Enter Redeem Code**\n\nExample: `ABCD123XYZ`\n\nSend the code you received from admin.", parse_mode='Markdown')
+        await safe_edit(query, "🎫 **Enter Redeem Code**\n\nExample: `ABCD123XYZ`\n\nSend the code you received from admin.", parse_mode='Markdown')
         context.user_data['waiting_for_redeem'] = True
     
     elif query.data == 'my_history':
@@ -469,9 +506,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "📜 **Your Search History**\n\n"
             for phone, date in history[:8]:
                 text += f"📞 `{phone}` - {date[:19]}\n"
-            await query.edit_message_text(text, parse_mode='Markdown')
+            await safe_edit(query, text, parse_mode='Markdown')
         else:
-            await query.edit_message_text("❌ No search history found!", parse_mode='Markdown')
+            await safe_edit(query, "❌ No search history found!", parse_mode='Markdown')
     
     elif query.data == 'admin' and user_id in ADMIN_IDS:
         keyboard = [
@@ -487,13 +524,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 BACK", callback_data='back_to_menu')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("⚙️ **ADMIN PANEL**", reply_markup=reply_markup, parse_mode='Markdown')
+        await safe_edit(query, "⚙️ **ADMIN PANEL**", reply_markup=reply_markup, parse_mode='Markdown')
     
     elif query.data == 'admin_gen_code' and user_id in ADMIN_IDS:
-        await query.edit_message_text("🎫 **Generate Code**\n\nCommand: `/gencode 10`\nExample: `/gencode 25`", parse_mode='Markdown')
+        await safe_edit(query, "🎫 **Generate Code**\n\nCommand: `/gencode 10`\nExample: `/gencode 25`", parse_mode='Markdown')
     
     elif query.data == 'admin_broadcast' and user_id in ADMIN_IDS:
-        await query.edit_message_text("📢 **BROADCAST MODE**\n\nSend the message you want to broadcast to all users.\n\n⚠️ Message will be sent to ALL users!", parse_mode='Markdown')
+        await safe_edit(query, "📢 **BROADCAST MODE**\n\nSend the message you want to broadcast to all users.\n\n⚠️ Message will be sent to ALL users!", parse_mode='Markdown')
         context.user_data['broadcast_mode'] = True
     
     elif query.data == 'admin_users' and user_id in ADMIN_IDS:
@@ -508,24 +545,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for user in users:
                 status = "🚫 BANNED" if user[3] else "✅ ACTIVE"
                 text += f"🆔 `{user[0]}` | {user[2]} credits | {status}\n"
-            await query.edit_message_text(text, parse_mode='Markdown')
+            await safe_edit(query, text, parse_mode='Markdown')
         else:
-            await query.edit_message_text("No users found!", parse_mode='Markdown')
+            await safe_edit(query, "No users found!", parse_mode='Markdown')
     
     elif query.data == 'admin_send_all' and user_id in ADMIN_IDS:
-        await query.edit_message_text("💰 **Send Credits to All Users**\n\nCommand: `/sendall credits`\nExample: `/sendall 5`", parse_mode='Markdown')
+        await safe_edit(query, "💰 **Send Credits to All Users**\n\nCommand: `/sendall credits`\nExample: `/sendall 5`", parse_mode='Markdown')
     
     elif query.data == 'admin_user_history' and user_id in ADMIN_IDS:
-        await query.edit_message_text("🔍 **User History**\n\nCommand: `/userhistory user_id`", parse_mode='Markdown')
+        await safe_edit(query, "🔍 **User History**\n\nCommand: `/userhistory user_id`", parse_mode='Markdown')
     
     elif query.data == 'admin_ban' and user_id in ADMIN_IDS:
-        await query.edit_message_text("🚫 **Ban User**\n\nCommand: `/ban user_id`", parse_mode='Markdown')
+        await safe_edit(query, "🚫 **Ban User**\n\nCommand: `/ban user_id`", parse_mode='Markdown')
     
     elif query.data == 'admin_unban' and user_id in ADMIN_IDS:
-        await query.edit_message_text("✅ **Unban User**\n\nCommand: `/unban user_id`", parse_mode='Markdown')
+        await safe_edit(query, "✅ **Unban User**\n\nCommand: `/unban user_id`", parse_mode='Markdown')
     
     elif query.data == 'admin_add_credits' and user_id in ADMIN_IDS:
-        await query.edit_message_text("➕ **Add Credits**\n\nCommand: `/addcredits user_id credits`\nExample: `/addcredits 8162909171 10`", parse_mode='Markdown')
+        await safe_edit(query, "➕ **Add Credits**\n\nCommand: `/addcredits user_id credits`\nExample: `/addcredits 8162909171 10`", parse_mode='Markdown')
     
     elif query.data == 'admin_stats' and user_id in ADMIN_IDS:
         conn = sqlite3.connect('osint_bot.db')
@@ -541,7 +578,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         text = f"📊 **Bot Statistics**\n\n👥 Total Users: {total_users}\n🚫 Banned: {banned_users}\n💰 Total Credits: {total_credits}\n🔍 Total Searches: {total_searches}"
-        await query.edit_message_text(text, parse_mode='Markdown')
+        await safe_edit(query, text, parse_mode='Markdown')
     
     elif query.data == 'back_to_menu':
         await show_menu(query, user_id)
@@ -561,7 +598,7 @@ async def show_menu(query, user_id):
         keyboard.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data='admin')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(f"🌟 **MAIN MENU**\n\n💰 Credits: {credits}", reply_markup=reply_markup, parse_mode='Markdown')
+    await safe_edit(query, f"🌟 **MAIN MENU**\n\n💰 Credits: {credits}", reply_markup=reply_markup, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -808,6 +845,10 @@ def main():
         print("❌ BOT_TOKEN environment variable not set!")
         print("Set it in Render Dashboard > Environment")
         return
+    
+    # Keepalive HTTP server for Render port binding
+    print("Starting keepalive HTTP server...")
+    run_keepalive_in_thread()
     
     print("Starting OSINT Bot...")
     print(f"Bot Token: {BOT_TOKEN[:15]}...")
