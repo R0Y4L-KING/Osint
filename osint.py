@@ -14,10 +14,11 @@ import re
 import os
 
 # ============ CONFIGURATION ============
-BOT_TOKEN = "0"  # 🔴 @BotFather SE NAYA TOKEN DALO 🔴
-ADMIN_IDS = [0]
-
-API_URL = "https://dark-info.site/test/api.php?key=Demo&num={}"
+# Environment variables se read karo (Render pe env vars set karo)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "5350926991").split(",") if x.strip()]
+API_URL = os.environ.get("API_URL", "https://dark-info.site/test/api.php?key=Demo&num={}")
+API_KEY = os.environ.get("API_KEY", "Demo")
 
 def init_db():
     if os.path.exists('osint_bot.db'):
@@ -802,6 +803,11 @@ def main():
     print("=" * 50)
     print("Initializing database...")
     init_db()
+    
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN environment variable not set!")
+        print("Set it in Render Dashboard > Environment")
+        return
     
     print("Starting OSINT Bot...")
     print(f"Bot Token: {BOT_TOKEN[:15]}...")
