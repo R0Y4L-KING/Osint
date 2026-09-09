@@ -1,919 +1,1037 @@
-# ============ FILE KA NAAM: osint_bot.py ============
+# ============================================================
+# TELEGRAM API BOT
+# Direct API URLs + Multi Channel Force Subscribe
+# ============================================================
+#
+# INSTALL:
+# pip install python-telegram-bot aiohttp
+#
+# RUN:
+# python bot.py
+# ============================================================
 
-import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-import sqlite3
-import requests
-import json
-from datetime import datetime
-import asyncio
-import random
-import string
 import re
-import os
+import json
+import aiohttp
 
-# ============ CONFIGURATION ============
-# Environment variables se read karo (Render pe env vars set karo)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "5350926991").split(",") if x.strip()]
-API_URL = os.environ.get("API_URL", "https://dark-info.site/test/api.php?key=Demo&num={}")
-API_KEY = os.environ.get("API_KEY", "Demo")
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
-
-
-async def safe_edit(query, text, reply_markup=None, parse_mode='Markdown'):
-    """Safely edit message - ignore 'not modified' errors."""
-    try:
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except Exception as e:
-        if "not modified" in str(e).lower():
-            pass
-        else:
-            try:
-                await query.edit_message_text(text, reply_markup=reply_markup)
-            except:
-                pass
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
 
-async def safe_send(bot, chat_id, text, parse_mode='Markdown'):
-    """Safely send message - handle blocked users."""
-    try:
-        await bot.send_message(chat_id, text, parse_mode=parse_mode)
-        return True
-    except Exception as e:
-        err = str(e).lower()
-        if "blocked" in err or "forbidden" in err:
-            print(f"User {chat_id} blocked the bot, skipping.")
-        else:
-            print(f"Failed to send to {chat_id}: {e}")
-        return False
+# ============================================================
+# 1. BOT TOKEN
+# ============================================================
+
+BOT_TOKEN = "king ko nhi milta"
 
 
-async def error_handler(update, context):
-    """Global error handler - suppress bot-blocked errors."""
-    error = context.error
-    err_str = str(error).lower()
-    if "blocked" in err_str or "forbidden" in err_str:
-        print(f"Bot was blocked by user, ignoring error.")
-        return
-    print(f"Unhandled error: {error}")
+# ============================================================
+# 2. FORCE SUB CHANNEL USERNAMES
+# ============================================================
+# YAHAN APNE CHANNEL USERNAMES DALO
+#
+# Example:
+# "@mychannel"
+#
+# Bot ko channels me admin rakho taaki membership check kar sake.
+# ============================================================
+
+FORCE_CHANNELS = [
+    "@altaf_upgraded",
+    "@altafmodschannel",
+]
 
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is running! Developed by @ModAppsKing")
-    def log_message(self, format, *args):
-        pass
+# ============================================================
+# 3. DIRECT API URLS
+# ============================================================
+#
+# {value} automatically user ke input se replace hoga.
+#
+# Example:
+# https://example.com/api/vehicle?number={value}
+#
+# API ko authorized/public-safe information hi return karni chahiye.
+# ============================================================
+
+NUMBER_API_URL = (
+    "https://nmdllpezcocquamhgpmb.supabase.co/functions/v1/lookup?number={value}"
+)
+
+TG_API_URL = (
+    "https://tg2num-botadminshere.vercel.app/?id={value}"
+)
+
+AADHAAR_API_URL = (
+    "https://dark-info.site/familyinfo/api.php?key=JSON-4325&aadhar={value}"
+)
+
+VEHICLE_API_URL = (
+    "https://revangevichelinfo.vercel.app/api/rc?number={value}"
+)
 
 
-def start_keepalive_server():
-    """Render Web Service ko port chahiye, isliye simple HTTP server chalate hain."""
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"Keepalive server started on port {port}")
-    server.serve_forever()
+# ============================================================
+# 4. MAIN KEYBOARD
+# ============================================================
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [
+            "📱 NUMBER INFO",
+            "👤 TG INFO"
+        ],
+        [
+            "🪪 AADHAAR VERIFY",
+            "🚗 VEHICLE INFO"
+        ],
+    ],
+    resize_keyboard=True,
+)
 
 
-def run_keepalive_in_thread():
-    """Keepalive server ko alag thread me chalao."""
-    server_thread = threading.Thread(target=start_keepalive_server, daemon=True)
-    server_thread.start()
+# ============================================================
+# 5. CREDIT FIELDS — YEH FIELDS RESPONSE SE HATA DI JAYENGE
+# ============================================================
+
+CREDIT_FIELDS = {
+    "credit",
+    "used_today",
+    "daily_limit",
+    "valid_days",
+    "expires_on",
+    "ok",
+    "status",
+    "success",
+    "raw_response",
+}
 
 
-def init_db():
-    if os.path.exists('osint_bot.db'):
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        try:
-            c.execute("SELECT phone_number FROM searches LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.close()
-            os.remove('osint_bot.db')
-            print("Old database deleted, creating new one...")
-        else:
-            conn.close()
-    
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, 
-        username TEXT, 
-        credits INTEGER DEFAULT 5, 
-        is_banned BOOLEAN DEFAULT FALSE, 
-        referred_by INTEGER, 
-        joined_date TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS searches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, 
-        phone_number TEXT, 
-        result_data TEXT, 
-        search_date TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS redeem_codes (
-        code TEXT PRIMARY KEY, 
-        credits INTEGER, 
-        used_by INTEGER, 
-        is_used BOOLEAN DEFAULT FALSE, 
-        created_by INTEGER, 
-        created_date TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS admins (
-        user_id INTEGER PRIMARY KEY
-    )''')
-    
-    for admin_id in ADMIN_IDS:
-        c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (admin_id,))
-    
-    conn.commit()
-    conn.close()
-    print("Database setup complete!")
+# ============================================================
+# 6. FIELD EMOJI MAPPING
+# ============================================================
 
-def add_credits(user_id, amount):
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("UPDATE users SET credits = credits + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    conn.close()
-    print(f"Added {amount} credits to user {user_id}")
+FIELD_EMOJI = {
+    "phone": "📞",
+    "phone2": "📞",
+    "phone3": "📞",
+    "phone4": "📞",
+    "phone5": "📞",
+    "adres": "🏠",
+    "adres2": "🏠",
+    "adres3": "🏠",
+    "documentnumber": "📄",
+    "fullname": "👤",
+    "fathername": "👨",
+    "region": "📍",
+    "tg_id": "🆔",
+    "country": "🌍",
+    "country_code": "🌐",
+    "number": "📞",
+    "provider": "📡",
+    "indianstate": "🗺️",
+    "mobileoperator": "📡",
+    "query": "🔍",
+    "name": "👤",
+    "father_name": "👨",
+    "address": "🏠",
+    "address2": "🏠",
+    "address3": "🏠",
+    "vehicle_number": "🚗",
+    "owner_name": "👤",
+    "model": "🚗",
+    "rc_status": "📋",
+    "registration_date": "📅",
+    "engine_number": "🔧",
+    "chassis_number": "🔧",
+    "fuel_type": "⛽",
+    "insurance": "🛡️",
+    "insurance_validity": "🛡️",
+    "fitness_validity": "✅",
+    "permit_validity": "✅",
+    "state": "🗺️",
+    "rto": "🏛️",
+    "aadhaar": "🪪",
+    "dob": "🎂",
+    "gender": "⚧",
+    "email": "📧",
+}
 
-def deduct_credit(user_id):
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT credits FROM users WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result and result[0] > 0:
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("UPDATE users SET credits = credits - 1 WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        print(f"Deducted 1 credit from user {user_id}. Remaining: {result[0]-1}")
-        return True
-    print(f"Failed to deduct credit from user {user_id}. Credits: {result[0] if result else 0}")
-    return False
 
-def get_user_credits(user_id):
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT credits FROM users WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    conn.close()
-    credits = result[0] if result else 0
-    print(f"User {user_id} has {credits} credits")
-    return credits
+def get_emoji(key):
+    """Field key ke liye emoji return karo."""
+    return FIELD_EMOJI.get(key.lower(), "🔹")
 
-def get_all_users():
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE is_banned = FALSE")
-    users = c.fetchall()
-    conn.close()
-    return [user[0] for user in users]
 
-def generate_redeem_code(credits, admin_id):
-    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO redeem_codes (code, credits, created_by, created_date) VALUES (?, ?, ?, ?)",
-             (code, credits, admin_id, datetime.now()))
-    conn.commit()
-    conn.close()
-    print(f"Generated code: {code} for {credits} credits")
-    return code
+def pretty_key(key):
+    """Field key ko readable format me convert karo."""
+    return key.replace("_", " ").title()
 
-def redeem_code(user_id, code):
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT credits, is_used FROM redeem_codes WHERE code = ?", (code,))
-    result = c.fetchone()
-    
-    if result:
-        credits = result[0]
-        is_used = result[1]
-        
-        if not is_used:
-            c.execute("UPDATE redeem_codes SET is_used = TRUE, used_by = ? WHERE code = ?", (user_id, code))
-            c.execute("UPDATE users SET credits = credits + ? WHERE user_id = ?", (credits, user_id))
-            conn.commit()
-            conn.close()
-            print(f"User {user_id} redeemed code {code} for {credits} credits")
-            return credits
-        else:
-            print(f"Code {code} already used")
+
+# ============================================================
+# 7. STRIP CREDIT FIELDS — recursively remove credit/usage info
+# ============================================================
+
+def strip_credit_fields(data):
+    """Response data se credit/usage fields recursively hata do."""
+    if isinstance(data, dict):
+        return {
+            k: strip_credit_fields(v)
+            for k, v in data.items()
+            if k.lower() not in CREDIT_FIELDS
+        }
+    if isinstance(data, list):
+        return [strip_credit_fields(item) for item in data]
+    return data
+
+
+# ============================================================
+# 8. FORMAT HELPERS
+# ============================================================
+
+def format_record_box(record, record_num=None):
+    """Ek record dict ko box-drawing format me render karo."""
+    lines = []
+
+    if record_num is not None:
+        lines.append(f"┌─ Record #{record_num} ─────────────")
     else:
-        print(f"Code {code} not found")
-    
-    conn.close()
-    return None
+        lines.append("┌────────────────────────────")
 
-def normalize_phone(phone):
-    # Remove +, spaces, dashes, brackets
-    cleaned = re.sub(r'[\s+\-()]', '', phone)
-    # Case 1: 12 digits starting with 91 (e.g. 919997378455)
-    if re.match(r'^91[6-9]\d{9}$', cleaned):
-        return cleaned
-    # Case 2: 10 digits (e.g. 9997378455)
-    if re.match(r'^[6-9]\d{9}$', cleaned):
-        return '91' + cleaned
-    # Case 3: 11 digits starting with 0 (e.g. 09997378455)
-    if re.match(r'^0[6-9]\d{9}$', cleaned):
-        return '91' + cleaned[1:]
-    return None
+    for key, value in record.items():
+        emoji = get_emoji(key)
+        pk = pretty_key(key)
+        if isinstance(value, dict):
+            lines.append(f"│ {emoji} {pk}:")
+            for sub_k, sub_v in value.items():
+                sub_emoji = get_emoji(sub_k)
+                lines.append(f"│   {sub_emoji} {pretty_key(sub_k)}: {sub_v}")
+        elif isinstance(value, list):
+            lines.append(f"│ {emoji} {pk}:")
+            for idx, item in enumerate(value, 1):
+                if isinstance(item, dict):
+                    for sub_k, sub_v in item.items():
+                        sub_emoji = get_emoji(sub_k)
+                        lines.append(f"│   {sub_emoji} {pretty_key(sub_k)}: {sub_v}")
+                else:
+                    lines.append(f"│   • {item}")
+        else:
+            lines.append(f"│ {emoji} {pk}: {value}")
 
-def format_api_response(raw_text):
-    """Parse the API text response and format it into clean structured blocks."""
-    try:
-        lines = [ln.strip() for ln in raw_text.split('\n') if ln.strip()]
-        if not lines:
-            return None
-        
-        # Identify section markers
-        sections = []
-        current_section = None
-        current_lines = []
-        
-        for ln in lines:
-            lower = ln.lower()
-            if 'main' in lower and 'details' in lower:
-                if current_section:
-                    sections.append((current_section, current_lines))
-                current_section = 'main'
-                current_lines = []
-            elif 'source-2' in lower or 'source2' in lower:
-                if current_section:
-                    sections.append((current_section, current_lines))
-                current_section = 'source2'
-                current_lines = []
-            elif 'source-3' in lower or 'source3' in lower:
-                if current_section:
-                    sections.append((current_section, current_lines))
-                current_section = 'source3'
-                current_lines = []
-            elif current_section is None:
-                # Header line before first section marker
-                continue
-            else:
-                current_lines.append(ln)
-        
-        if current_section:
-            sections.append((current_section, current_lines))
-        
-        if not sections:
-            return None
-        
-        output_parts = []
-        
-        section_emojis = {
-            'main': '📋',
-            'source2': '🔗',
-            'source3': '📎',
-        }
-        section_names = {
-            'main': 'MAIN DETAILS',
-            'source2': 'SOURCE 2',
-            'source3': 'SOURCE 3',
-        }
-        
-        for sec_name, sec_lines in sections:
-            emoji = section_emojis.get(sec_name, '📄')
-            display = section_names.get(sec_name, sec_name.upper())
-            
-            if sec_name == 'main':
-                # Split into individual records. A new record starts at "Phone:" (not Phone2/3..)
-                records = []
-                current_record = []
-                
-                for ln in sec_lines:
-                    # New record starts with "Phone:" exactly (not Phone2, Phone3 etc)
-                    if re.match(r'^Phone\s*:', ln):
-                        if current_record:
-                            records.append(current_record)
-                        current_record = [ln]
-                    else:
-                        if current_record:
-                            current_record.append(ln)
-                        else:
-                            current_record = [ln]
-                
-                if current_record:
-                    records.append(current_record)
-                
-                output_parts.append(f"\n{emoji} *{display}* ({len(records)} record{'s' if len(records) != 1 else ''} found)\n")
-                
-                for i, rec in enumerate(records, 1):
-                    output_parts.append(f"\n┌─ *Record #{i}* ─────────────")
-                    for field in rec:
-                        # Format field nicely: "Phone: value" -> "📞 Phone: value"
-                        if field.startswith('Phone') or field.startswith('Mobilephone'):
-                            field = '📞 ' + field
-                        elif field.startswith('Adres'):
-                            field = '🏠 ' + field
-                        elif field.startswith('Fullname'):
-                            field = '👤 ' + field
-                        elif field.startswith('Fathername'):
-                            field = '👨 ' + field
-                        elif field.startswith('Documentnumber'):
-                            field = '📄 ' + field
-                        elif field.startswith('Region'):
-                            field = '📍 ' + field
-                        elif field.startswith('Registrationdate'):
-                            field = '📅 ' + field
-                        output_parts.append(f"│ {field}")
-                    output_parts.append("└────────────────────────────")
-            
-            else:
-                # source2 / source3 - show as-is with section header
-                output_parts.append(f"\n{emoji} *{display}*\n")
-                for ln in sec_lines:
-                    if ln.startswith('Mobilephone'):
-                        ln = '📞 ' + ln
-                    elif ln.startswith('Registrationdate'):
-                        ln = '📅 ' + ln
-                    output_parts.append(f"• {ln}")
-        
-        result = '\n'.join(output_parts)
-        return result
-    except Exception:
+    lines.append("└────────────────────────────")
+    return "\n".join(lines)
+
+
+def format_kv_bullets(data, indent=0):
+    """Dict ko bullet-point format me render karo."""
+    lines = []
+    pad = "  " * indent
+    for key, value in data.items():
+        emoji = get_emoji(key)
+        pk = pretty_key(key)
+        if isinstance(value, dict):
+            lines.append(f"{pad}{emoji} {pk}:")
+            lines.append(format_kv_bullets(value, indent + 1))
+        elif isinstance(value, list):
+            lines.append(f"{pad}{emoji} {pk}:")
+            for item in value:
+                if isinstance(item, dict):
+                    for sub_k, sub_v in item.items():
+                        sub_emoji = get_emoji(sub_k)
+                        lines.append(f"{pad}  • {pretty_key(sub_k)}: {sub_v}")
+                else:
+                    lines.append(f"{pad}  • {item}")
+        else:
+            lines.append(f"{pad}• {pk}: {value}")
+    return "\n".join(lines)
+
+
+def extract_records(data):
+    """Response data se records list nikalo (agar hai to)."""
+    # Direct list
+    if isinstance(data, list):
+        dict_items = [r for r in data if isinstance(r, dict)]
+        if dict_items:
+            return dict_items
         return None
 
+    if not isinstance(data, dict):
+        return None
 
-async def search_number(phone, update, context):
-    msg = await update.message.reply_text("🔍 **Searching...**\n⏳ Please wait", parse_mode='Markdown')
-    
-    frames = ["🔍", "🔄", "⏳", "📡", "⚡", "✨", "🎯", "💫"]
-    
-    for i in range(5):
-        await asyncio.sleep(0.5)
-        try:
-            await msg.edit_text(f"{frames[i % 8]} **Processing Target Number**\n📞 `{phone}`\n{'.' * ((i % 3) + 1)}", parse_mode='Markdown')
-        except:
-            pass
-    
-    try:
-        url = API_URL.format(phone)
-        response = requests.get(url, timeout=20)
-        
-        if response.status_code == 200:
-            raw = response.text.strip()
-            if not raw:
-                await msg.edit_text("⚠️ **API returned empty response!**\nTry again later or check number.", parse_mode='Markdown')
-                return
-            
-            data = None
-            
-            # Try parsing as JSON directly
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                pass
-            
-            # If not JSON, try extracting JSON embedded inside HTML
-            if data is None:
-                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', raw, re.DOTALL)
-                if json_match:
-                    try:
-                        data = json.loads(json_match.group(0))
-                    except json.JSONDecodeError:
-                        pass
-            
-            # If still no JSON, extract text from HTML
-            if data is None and '<html' in raw.lower():
-                # Remove script and style tags
-                text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL | re.IGNORECASE)
-                text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-                # Replace <br>, </p>, </div>, </tr>, </li> with newlines
-                text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-                text = re.sub(r'</(?:p|div|tr|li|h[1-6])>', '\n', text, flags=re.IGNORECASE)
-                # Remove all remaining HTML tags
-                text = re.sub(r'<[^>]+>', ' ', text)
-                # Clean up each line
-                lines = [ln.strip() for ln in text.split('\n')]
-                lines = [ln for ln in lines if ln]
-                raw_text = '\n'.join(lines)
-                
-                if not raw_text:
-                    await msg.edit_text("⚠️ **API returned empty HTML page!**\n\nKey may be expired or invalid.\nCheck API key in code.", parse_mode='Markdown')
-                    return
-                
-                # Try to structure the response into nice formatted blocks
-                formatted = format_api_response(raw_text)
-                
-                if formatted:
-                    # Split into multiple messages if needed (Telegram 4096 char limit)
-                    chunks = [formatted[i:i+3900] for i in range(0, len(formatted), 3900)]
-                    first = True
-                    for chunk in chunks:
-                        if first:
-                            await msg.edit_text(chunk, parse_mode='Markdown')
-                            first = False
-                        else:
-                            await update.message.reply_text(chunk, parse_mode='Markdown')
-                else:
-                    # Fallback: raw text in code block
-                    chunks = [raw_text[i:i+3900] for i in range(0, len(raw_text), 3900)]
-                    first = True
-                    for chunk in chunks:
-                        if first:
-                            await msg.edit_text(f"📋 **API Response:**\n\n`{chunk}`", parse_mode='Markdown')
-                            first = False
-                        else:
-                            await update.message.reply_text(f"`{chunk}`", parse_mode='Markdown')
-                return
-            
-            if data is None:
-                await msg.edit_text(f"⚠️ **Could not parse API response!**\n\nRaw (first 1000 chars):\n`{raw[:1000]}`", parse_mode='Markdown')
-                return
-            
-            if not isinstance(data, dict):
-                await msg.edit_text(f"⚠️ **Unexpected API response format!**\n\n`{str(data)[:1000]}`", parse_mode='Markdown')
-                return
-            
-            if 'developer' in data:
-                data['developer'] = "@ModAppsKing"
-            
-            conn = sqlite3.connect('osint_bot.db')
-            c = conn.cursor()
-            c.execute("INSERT INTO searches (user_id, phone_number, result_data, search_date) VALUES (?, ?, ?, ?)",
-                     (update.effective_user.id, phone, json.dumps(data), datetime.now()))
-            conn.commit()
-            conn.close()
-            
-            json_output = json.dumps(data, indent=2, ensure_ascii=False)
-            
-            if len(json_output) > 4096:
-                await msg.edit_text(f"```json\n{json_output[:3000]}\n```", parse_mode='Markdown')
-                await update.message.reply_text(f"```json\n{json_output[3000:6000]}\n```", parse_mode='Markdown')
-            else:
-                await msg.edit_text(f"```json\n{json_output}\n```", parse_mode='Markdown')
-        else:
-            await msg.edit_text(f"⚠️ **API Error:** Status {response.status_code}\n\nResponse: `{response.text[:500]}`", parse_mode='Markdown')
-            
-    except requests.exceptions.Timeout:
-        await msg.edit_text("⚠️ **Connection Timeout!**\nTry again later.", parse_mode='Markdown')
-    except requests.exceptions.ConnectionError:
-        await msg.edit_text("⚠️ **Connection Error!**\nCheck internet or try again.", parse_mode='Markdown')
-    except Exception as e:
-        await msg.edit_text(f"⚠️ **Error:** {str(e)}", parse_mode='Markdown')
+    # Common keys jisme records ho sakte hain
+    for key in ("records", "data", "results", "result", "items", "list"):
+        val = data.get(key)
+        if isinstance(val, list):
+            dict_items = [r for r in val if isinstance(r, dict)]
+            if dict_items:
+                return dict_items
+        if isinstance(val, dict):
+            # Nested — ek level aur check karo
+            for sub_key in ("records", "data", "results", "result", "items", "list"):
+                sub_val = val.get(sub_key)
+                if isinstance(sub_val, list):
+                    dict_items = [r for r in sub_val if isinstance(r, dict)]
+                    if dict_items:
+                        return dict_items
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    credits = get_user_credits(user_id)
-    
-    keyboard = [
-        [InlineKeyboardButton("📞 NUMBER TO INFO", callback_data='search')],
-        [InlineKeyboardButton("💰 MY CREDITS", callback_data='credits')],
-        [InlineKeyboardButton("👥 REFERRAL LINK", callback_data='referral')],
-        [InlineKeyboardButton("🎫 REDEEM CODE", callback_data='redeem')],
-        [InlineKeyboardButton("📜 MY HISTORY", callback_data='my_history')]
-    ]
-    
-    if user_id in ADMIN_IDS:
-        keyboard.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data='admin')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    name = (update.effective_user.first_name or "User")[:15]
-    welcome_msg = (
-        "🌟 *OSINT PHONE NUMBER BOT* 🌟\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👋 Welcome: *{name}*\n"
-        f"💰 Your Credits: *{credits}*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ *Features:*\n"
-        "• 10 digit number search (1 credit)\n"
-        "• Start with 5 free credits\n"
-        "• Refer friends = +5 credits\n"
-        "• Redeem codes = free credits\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "👨‍💻 Developed by: @ModAppsKing"
-    )
-    
-    try:
-        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
-    except Exception as e:
-        print(f"Failed to send menu: {e}")
+    return None
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    
-    if query.data == 'search':
-        await safe_edit(query, "📞 **Send 10 digit number**\n\nExamples:\n`8084798673`\n`7991436925`\n`9116224238`\n\n⚠️ No +91 or country code needed\n\n💡 Each search costs 1 credit", parse_mode='Markdown')
-        context.user_data['waiting_for_number'] = True
-    
-    elif query.data == 'credits':
-        credits = get_user_credits(user_id)
-        await safe_edit(query, f"💰 **Your Credits:** `{credits}`\n\n💡 **How to earn:**\n• Referral: +5 credits\n• Redeem codes: +? credits", parse_mode='Markdown')
-    
-    elif query.data == 'referral':
-        ref_link = f"https://t.me/{context.bot.username}?start=ref_{user_id}"
-        await safe_edit(query, f"👥 **Referral Link**\n\n`{ref_link}`\n\nShare this link with friends!\nYou get 5 credits per referral!", parse_mode='Markdown')
-    
-    elif query.data == 'redeem':
-        await safe_edit(query, "🎫 **Enter Redeem Code**\n\nExample: `ABCD123XYZ`\n\nSend the code you received from admin.", parse_mode='Markdown')
-        context.user_data['waiting_for_redeem'] = True
-    
-    elif query.data == 'my_history':
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("SELECT phone_number, search_date FROM searches WHERE user_id = ? ORDER BY search_date DESC LIMIT 10", (user_id,))
-        history = c.fetchall()
-        conn.close()
-        
-        if history:
-            text = "📜 **Your Search History**\n\n"
-            for phone, date in history[:8]:
-                text += f"📞 `{phone}` - {date[:19]}\n"
-            await safe_edit(query, text, parse_mode='Markdown')
-        else:
-            await safe_edit(query, "❌ No search history found!", parse_mode='Markdown')
-    
-    elif query.data == 'admin' and user_id in ADMIN_IDS:
-        keyboard = [
-            [InlineKeyboardButton("🎫 GENERATE CODE", callback_data='admin_gen_code')],
-            [InlineKeyboardButton("📢 BROADCAST", callback_data='admin_broadcast')],
-            [InlineKeyboardButton("👥 ALL USERS", callback_data='admin_users')],
-            [InlineKeyboardButton("💰 SEND CREDITS TO ALL", callback_data='admin_send_all')],
-            [InlineKeyboardButton("🔍 USER HISTORY", callback_data='admin_user_history')],
-            [InlineKeyboardButton("🚫 BAN USER", callback_data='admin_ban')],
-            [InlineKeyboardButton("✅ UNBAN USER", callback_data='admin_unban')],
-            [InlineKeyboardButton("📊 STATS", callback_data='admin_stats')],
-            [InlineKeyboardButton("➕ ADD CREDITS", callback_data='admin_add_credits')],
-            [InlineKeyboardButton("🔙 BACK", callback_data='back_to_menu')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await safe_edit(query, "⚙️ **ADMIN PANEL**", reply_markup=reply_markup, parse_mode='Markdown')
-    
-    elif query.data == 'admin_gen_code' and user_id in ADMIN_IDS:
-        await safe_edit(query, "🎫 **Generate Code**\n\nCommand: `/gencode 10`\nExample: `/gencode 25`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_broadcast' and user_id in ADMIN_IDS:
-        await safe_edit(query, "📢 **BROADCAST MODE**\n\nSend the message you want to broadcast to all users.\n\n⚠️ Message will be sent to ALL users!", parse_mode='Markdown')
-        context.user_data['broadcast_mode'] = True
-    
-    elif query.data == 'admin_users' and user_id in ADMIN_IDS:
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("SELECT user_id, username, credits, is_banned FROM users ORDER BY joined_date DESC LIMIT 15")
-        users = c.fetchall()
-        conn.close()
-        
-        if users:
-            text = "👥 **Recent Users**\n\n"
-            for user in users:
-                status = "🚫 BANNED" if user[3] else "✅ ACTIVE"
-                text += f"🆔 `{user[0]}` | {user[2]} credits | {status}\n"
-            await safe_edit(query, text, parse_mode='Markdown')
-        else:
-            await safe_edit(query, "No users found!", parse_mode='Markdown')
-    
-    elif query.data == 'admin_send_all' and user_id in ADMIN_IDS:
-        await safe_edit(query, "💰 **Send Credits to All Users**\n\nCommand: `/sendall credits`\nExample: `/sendall 5`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_user_history' and user_id in ADMIN_IDS:
-        await safe_edit(query, "🔍 **User History**\n\nCommand: `/userhistory user_id`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_ban' and user_id in ADMIN_IDS:
-        await safe_edit(query, "🚫 **Ban User**\n\nCommand: `/ban user_id`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_unban' and user_id in ADMIN_IDS:
-        await safe_edit(query, "✅ **Unban User**\n\nCommand: `/unban user_id`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_add_credits' and user_id in ADMIN_IDS:
-        await safe_edit(query, "➕ **Add Credits**\n\nCommand: `/addcredits user_id credits`\nExample: `/addcredits 8162909171 10`", parse_mode='Markdown')
-    
-    elif query.data == 'admin_stats' and user_id in ADMIN_IDS:
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        total_users = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
-        banned_users = c.fetchone()[0]
-        c.execute("SELECT SUM(credits) FROM users")
-        total_credits = c.fetchone()[0] or 0
-        c.execute("SELECT COUNT(*) FROM searches")
-        total_searches = c.fetchone()[0]
-        conn.close()
-        
-        text = f"📊 **Bot Statistics**\n\n👥 Total Users: {total_users}\n🚫 Banned: {banned_users}\n💰 Total Credits: {total_credits}\n🔍 Total Searches: {total_searches}"
-        await safe_edit(query, text, parse_mode='Markdown')
-    
-    elif query.data == 'back_to_menu':
-        await show_menu(query, user_id)
 
-async def show_menu(query, user_id):
-    credits = get_user_credits(user_id)
-    
-    keyboard = [
-        [InlineKeyboardButton("📞 NUMBER TO INFO", callback_data='search')],
-        [InlineKeyboardButton("💰 MY CREDITS", callback_data='credits')],
-        [InlineKeyboardButton("👥 REFERRAL LINK", callback_data='referral')],
-        [InlineKeyboardButton("🎫 REDEEM CODE", callback_data='redeem')],
-        [InlineKeyboardButton("📜 MY HISTORY", callback_data='my_history')]
-    ]
-    
-    if user_id in ADMIN_IDS:
-        keyboard.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data='admin')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await safe_edit(query, f"🌟 **MAIN MENU**\n\n💰 Credits: {credits}", reply_markup=reply_markup, parse_mode='Markdown')
+def format_response(result, mode=None):
+    """API response ko clean format me convert karo.
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Check if user is banned
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    c.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    conn.close()
-    
-    if result and result[0]:
-        await update.message.reply_text("❌ **You are banned!**", parse_mode='Markdown')
-        return
-    
-    # BROADCAST MODE
-    if context.user_data.get('broadcast_mode'):
-        if user_id in ADMIN_IDS:
-            users = get_all_users()
-            success_count = 0
-            fail_count = 0
-            
-            broadcast_msg = update.message.text
-            status_msg = await update.message.reply_text(f"📢 **Broadcasting...**\n\nTotal Users: {len(users)}", parse_mode='Markdown')
-            
-            for user in users:
-                try:
-                    sent = await safe_send(
-                        context.bot, user,
-                        f"📢 **📢 ANNOUNCEMENT 📢**\n\n{broadcast_msg}\n\n━━━━━━━━━━━━━━━━━━━━\n👨‍💻 **Developed by:** @ModAppsKing\n━━━━━━━━━━━━━━━━━━━━"
-                    )
-                    if sent:
-                        success_count += 1
-                    await asyncio.sleep(0.05)
-                except Exception as e:
-                    fail_count += 1
-                    print(f"Failed to send to {user}: {e}")
-            
-            await status_msg.edit_text(
-                f"✅ **Broadcast Complete!**\n\n"
-                f"📨 Sent to: `{success_count}` users\n"
-                f"❌ Failed: `{fail_count}` users\n"
-                f"👥 Total: `{len(users)}` users",
-                parse_mode='Markdown'
+    - Credit/usage fields hata do
+    - Box-drawing style records
+    - Bullet-point KV for simple data
+    """
+
+    # --- ERROR CASE ---
+    if not result.get("ok"):
+        error = result.get("error", "Unknown error")
+        details = result.get("details", "")
+        msg = f"❌ {error}"
+        if details:
+            msg += f"\n📝 {details}"
+        return msg
+
+    data = result.get("result", {})
+    data = strip_credit_fields(data)
+
+    # Agar data empty ho gaya sab strip hone ke baad
+    if not data or (isinstance(data, dict) and not data):
+        return "❌ No data found."
+
+    # ========================================================
+    # TELEGRAM MODE
+    # ========================================================
+    if mode == "telegram":
+        # TG API: result.result me actual data hota hai
+        inner = data.get("result", data)
+        if isinstance(inner, dict) and inner:
+            header = "👤 TELEGRAM INFO\n\n"
+            body = format_kv_bullets(inner)
+            return f"<pre>{header}{body}</pre>"
+        if isinstance(inner, str) and inner:
+            return f"<pre>👤 TELEGRAM INFO\n\n• Result: {inner}</pre>"
+        return "❌ No Telegram data found."
+
+    # ========================================================
+    # NUMBER MODE
+    # ========================================================
+    if mode == "number":
+        records = extract_records(data)
+        if records:
+            count = len(records)
+            header = (
+                f"📋 MAIN DETAILS ({count} "
+                f"record{'s' if count != 1 else ''} found)\n\n"
             )
-            context.user_data['broadcast_mode'] = False
-        else:
-            await update.message.reply_text("❌ **You are not authorized to use broadcast!**", parse_mode='Markdown')
-            context.user_data['broadcast_mode'] = False
-        return
-    
-    # WAITING FOR NUMBER
-    if context.user_data.get('waiting_for_number'):
-        phone = update.message.text.strip()
-        
-        normalized = normalize_phone(phone)
-        if normalized:
-            credits = get_user_credits(user_id)
-            if credits > 0:
-                if deduct_credit(user_id):
-                    await search_number(normalized, update, context)
-                else:
-                    await update.message.reply_text("❌ Failed to deduct credit!", parse_mode='Markdown')
-            else:
-                await update.message.reply_text("❌ **No credits left!**\n\nUse referral or redeem code.", parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ **Invalid number!**\n\nAccepted formats:\n• 10 digit: `8084798673`\n• With 91: `918084798673`\n• With +91: `+918084798673`\n• With 0: `08084798673`", parse_mode='Markdown')
-        
-        context.user_data['waiting_for_number'] = False
-        return
-    
-    # WAITING FOR REDEEM CODE
-    if context.user_data.get('waiting_for_redeem'):
-        code = update.message.text.strip().upper()
-        credits = redeem_code(user_id, code)
-        
-        if credits:
-            await update.message.reply_text(f"✅ **Redeem Successful!**\n\nYou received `{credits}` credits!\n\n💰 Your total credits: `{get_user_credits(user_id)}`", parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ **Invalid or Used Code!**\n\nPlease check the code and try again.", parse_mode='Markdown')
-        
-        context.user_data['waiting_for_redeem'] = False
-        return
+            body = "\n\n".join(
+                format_record_box(r, i + 1) for i, r in enumerate(records)
+            )
+            return f"<pre>{header}{body}</pre>"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "NoUsername"
-    
-    conn = sqlite3.connect('osint_bot.db')
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    existing_user = c.fetchone()
-    
-    if not existing_user:
-        referred_by = None
-        if context.args and len(context.args) > 0 and context.args[0].startswith('ref_'):
-            try:
-                referred_by = int(context.args[0].split('_')[1])
-                if referred_by != user_id:
-                    add_credits(referred_by, 5)
-                    await context.bot.send_message(
-                        referred_by, 
-                        f"🎉 **New Referral!**\n\n@{username} joined using your link!\nYou got **5 credits**!",
-                        parse_mode='Markdown'
+        # Single record dict
+        if isinstance(data, dict) and data:
+            return f"<pre>📋 NUMBER INFO\n\n{format_kv_bullets(data)}</pre>"
+
+        return "❌ No data found."
+
+    # ========================================================
+    # AADHAAR MODE
+    # ========================================================
+    if mode == "aadhaar":
+        records = extract_records(data)
+        if records:
+            count = len(records)
+            header = (
+                f"🪪 AADHAAR DETAILS ({count} "
+                f"record{'s' if count != 1 else ''} found)\n\n"
+            )
+            body = "\n\n".join(
+                format_record_box(r, i + 1) for i, r in enumerate(records)
+            )
+            return f"<pre>{header}{body}</pre>"
+
+        if isinstance(data, dict) and data:
+            return f"<pre>🪪 AADHAAR DETAILS\n\n{format_kv_bullets(data)}</pre>"
+
+        return "❌ No data found."
+
+    # ========================================================
+    # VEHICLE MODE
+    # ========================================================
+    if mode == "vehicle":
+        records = extract_records(data)
+        if records:
+            count = len(records)
+            header = (
+                f"🚗 VEHICLE DETAILS ({count} "
+                f"record{'s' if count != 1 else ''} found)\n\n"
+            )
+            body = "\n\n".join(
+                format_record_box(r, i + 1) for i, r in enumerate(records)
+            )
+            return f"<pre>{header}{body}</pre>"
+
+        if isinstance(data, dict) and data:
+            return f"<pre>🚗 VEHICLE DETAILS\n\n{format_kv_bullets(data)}</pre>"
+
+        return "❌ No data found."
+
+    # ========================================================
+    # FALLBACK — generic clean format
+    # ========================================================
+    if isinstance(data, dict) and data:
+        return f"<pre>{format_kv_bullets(data)}</pre>"
+    if isinstance(data, list) and data:
+        dict_items = [r for r in data if isinstance(r, dict)]
+        if dict_items:
+            body = "\n\n".join(
+                format_record_box(r, i + 1) for i, r in enumerate(dict_items)
+            )
+            return f"<pre>{body}</pre>"
+        return f"<pre>{json.dumps(data, indent=2, ensure_ascii=False)}</pre>"
+
+    return f"<pre>{json.dumps(data, indent=2, ensure_ascii=False)}</pre>"
+
+
+# ============================================================
+# 9. VALIDATION
+# ============================================================
+
+def valid_phone(value):
+
+    value = value.strip()
+
+    return bool(
+        re.fullmatch(
+            r"\+?[0-9]{7,15}",
+            value
+        )
+    )
+
+
+def valid_telegram_id(value):
+
+    value = value.strip()
+
+    return bool(
+        re.fullmatch(
+            r"-?[0-9]{5,20}",
+            value
+        )
+    )
+
+
+def valid_aadhaar(value):
+
+    value = re.sub(
+        r"\D",
+        "",
+        value
+    )
+
+    return len(value) == 12
+
+
+def valid_vehicle(value):
+
+    value = (
+        value
+        .upper()
+        .replace(" ", "")
+        .replace("-", "")
+    )
+
+    return bool(
+        re.fullmatch(
+            r"[A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{3,4}",
+            value
+        )
+    )
+
+
+# ============================================================
+# 10. API REQUEST
+# ============================================================
+
+async def call_api(api_url, value):
+
+    if not api_url:
+
+        return {
+            "ok": False,
+            "error": "API URL is not configured"
+        }
+
+    endpoint = api_url.replace(
+        "{value}",
+        value
+    )
+
+    try:
+
+        timeout = aiohttp.ClientTimeout(
+            total=15
+        )
+
+        async with aiohttp.ClientSession(
+            timeout=timeout
+        ) as session:
+
+            async with session.get(
+                endpoint
+            ) as response:
+
+                status = response.status
+
+                content_type = (
+                    response.headers
+                    .get(
+                        "content-type",
+                        ""
                     )
-            except:
-                pass
-        
-        c.execute("INSERT INTO users (user_id, username, referred_by, joined_date) VALUES (?, ?, ?, ?)",
-                 (user_id, username, referred_by, datetime.now()))
-        conn.commit()
-        
-    conn.close()
-    await menu(update, context)
+                )
 
-# ============ ADMIN COMMANDS - FIXED ============
-async def generate_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
+                if "application/json" in content_type:
+
+                    data = await response.json()
+
+                else:
+
+                    text = await response.text()
+
+                    try:
+
+                        data = json.loads(text)
+
+                    except Exception:
+
+                        data = {
+                            "raw_response": text
+                        }
+
+                return {
+                    "ok": status < 400,
+                    "status": status,
+                    "result": data
+                }
+
+    except aiohttp.ClientError as error:
+
+        return {
+            "ok": False,
+            "error": "API connection failed",
+            "details": str(error)
+        }
+
+    except Exception as error:
+
+        return {
+            "ok": False,
+            "error": "Unexpected error",
+            "details": str(error)
+        }
+
+
+# ============================================================
+# 11. CHECK CHANNEL MEMBERSHIP
+# ============================================================
+
+async def get_missing_channels(
+    bot,
+    user_id
+):
+
+    missing = []
+
+    for channel in FORCE_CHANNELS:
+
+        try:
+
+            member = await bot.get_chat_member(
+                chat_id=channel,
+                user_id=user_id
+            )
+
+            if member.status not in (
+                "member",
+                "administrator",
+                "creator",
+            ):
+
+                missing.append(channel)
+
+        except Exception:
+
+            missing.append(channel)
+
+    return missing
+
+
+# ============================================================
+# 12. FORCE SUB CHECK
+# ============================================================
+
+async def force_sub(update):
+
+    if not FORCE_CHANNELS:
+        return True
+
+    user_id = update.effective_user.id
+
+    missing = await get_missing_channels(
+        update.get_bot(),
+        user_id
+    )
+
+    if not missing:
+        return True
+
+    buttons = []
+
+    for channel in missing:
+
+        username = channel.lstrip("@")
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"📢 JOIN {channel}",
+                    url=f"https://t.me/{username}"
+                )
+            ]
+        )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                "✅ VERIFY",
+                callback_data="verify_subscription"
+            )
+        ]
+    )
+
+    await update.effective_message.reply_text(
+        "🔐 ACCESS LOCKED\n\n"
+        "Bot use karne ke liye pehle "
+        "required channels join karo.\n\n"
+        "Join karne ke baad VERIFY dabao.",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+    return False
+
+
+# ============================================================
+# 13. START
+# ============================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not await force_sub(update):
         return
-    
-    try:
-        credits = int(context.args[0])
-        code = generate_redeem_code(credits, update.effective_user.id)
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "🤖 BOT READY\n\n"
+        "Neeche se option select karo:",
+        reply_markup=MAIN_KEYBOARD
+    )
+
+
+# ============================================================
+# 14. VERIFY BUTTON
+# ============================================================
+
+async def verify_subscription(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    missing = await get_missing_channels(
+        context.bot,
+        user_id
+    )
+
+    if missing:
+
+        await query.message.reply_text(
+            "❌ Verification failed.\n\n"
+            "Sabhi required channels join karke "
+            "VERIFY dobara press karo."
+        )
+
+        return
+
+    await query.message.reply_text(
+        "✅ VERIFIED SUCCESSFULLY!\n\n"
+        "Ab bot use kar sakte ho.",
+        reply_markup=MAIN_KEYBOARD
+    )
+
+
+# ============================================================
+# 15. MESSAGE HANDLER
+# ============================================================
+
+async def message_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    if not await force_sub(update):
+        return
+
+    text = update.message.text.strip()
+
+
+    # --------------------------------------------------------
+    # NUMBER BUTTON
+    # --------------------------------------------------------
+
+    if text == "📱 NUMBER INFO":
+
+        context.user_data["mode"] = "number"
+
         await update.message.reply_text(
-            f"✅ **Redeem Code Generated!**\n\n"
-            f"📝 **Code:** `{code}`\n"
-            f"💰 **Credits:** `{credits}`\n\n"
-            f"Share this code with users!",
-            parse_mode='Markdown'
+            "📱 Number send karo:"
         )
-    except:
-        await update.message.reply_text("❌ **Usage:** `/gencode credits`\n**Example:** `/gencode 10`", parse_mode='Markdown')
 
-async def add_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
         return
-    
-    try:
-        user_id = int(context.args[0])
-        amount = int(context.args[1])
-        add_credits(user_id, amount)
-        new_credits = get_user_credits(user_id)
+
+
+    # --------------------------------------------------------
+    # TELEGRAM BUTTON
+    # --------------------------------------------------------
+
+    if text == "👤 TG INFO":
+
+        context.user_data["mode"] = "telegram"
+
         await update.message.reply_text(
-            f"✅ **Credits Added!**\n\n"
-            f"👤 **User:** `{user_id}`\n"
-            f"➕ **Added:** `{amount}` credits\n"
-            f"💰 **Total Credits:** `{new_credits}`",
-            parse_mode='Markdown'
+            "👤 Telegram numeric ID send karo:"
         )
-    except:
-        await update.message.reply_text("❌ **Usage:** `/addcredits user_id credits`\n**Example:** `/addcredits 8162909171 10`", parse_mode='Markdown')
 
-async def send_all_credits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
         return
-    
-    try:
-        amount = int(context.args[0])
-        users = get_all_users()
-        
-        status_msg = await update.message.reply_text(f"💰 **Sending {amount} credits to all users...**\n\n👥 Total Users: {len(users)}", parse_mode='Markdown')
-        
-        count = 0
-        for user_id in users:
-            add_credits(user_id, amount)
-            count += 1
-            await asyncio.sleep(0.01)
-        
-        await status_msg.edit_text(
-            f"✅ **Success!**\n\n"
-            f"💰 Sent `{amount}` credits to `{count}` users\n"
-            f"👥 Total users updated: `{count}`",
-            parse_mode='Markdown'
+
+
+    # --------------------------------------------------------
+    # AADHAAR BUTTON
+    # --------------------------------------------------------
+
+    if text == "🪪 AADHAAR VERIFY":
+
+        context.user_data["mode"] = "aadhaar"
+
+        await update.message.reply_text(
+            "🪪 12-digit Aadhaar number "
+            "authorized verification ke liye send karo:"
         )
-        
-    except:
-        await update.message.reply_text("❌ **Usage:** `/sendall credits`\n**Example:** `/sendall 5`", parse_mode='Markdown')
 
-async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
         return
-    
-    try:
-        user_id = int(context.args[0])
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("UPDATE users SET is_banned = TRUE WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"🚫 **User Banned!**\n\nUser `{user_id}` has been banned from using the bot.", parse_mode='Markdown')
-    except:
-        await update.message.reply_text("❌ **Usage:** `/ban user_id`\n**Example:** `/ban 123456789`", parse_mode='Markdown')
 
-async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("UPDATE users SET is_banned = FALSE WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"✅ **User Unbanned!**\n\nUser `{user_id}` has been unbanned.", parse_mode='Markdown')
-    except:
-        await update.message.reply_text("❌ **Usage:** `/unban user_id`\n**Example:** `/unban 123456789`", parse_mode='Markdown')
 
-async def user_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not an admin!", parse_mode='Markdown')
+    # --------------------------------------------------------
+    # VEHICLE BUTTON
+    # --------------------------------------------------------
+
+    if text == "🚗 VEHICLE INFO":
+
+        context.user_data["mode"] = "vehicle"
+
+        await update.message.reply_text(
+            "🚗 Vehicle registration number send karo:"
+        )
+
         return
-    
-    try:
-        user_id = int(context.args[0])
-        conn = sqlite3.connect('osint_bot.db')
-        c = conn.cursor()
-        c.execute("SELECT phone_number, search_date FROM searches WHERE user_id = ? ORDER BY search_date DESC LIMIT 10", (user_id,))
-        history = c.fetchall()
-        conn.close()
-        
-        if history:
-            text = f"📜 **Search History for User {user_id}**\n\n"
-            for phone, date in history:
-                text += f"📞 `{phone}` - {date[:19]}\n"
-            await update.message.reply_text(text, parse_mode='Markdown')
-        else:
-            await update.message.reply_text(f"❌ No search history found for user `{user_id}`", parse_mode='Markdown')
-    except:
-        await update.message.reply_text("❌ **Usage:** `/userhistory user_id`\n**Example:** `/userhistory 8162909171`", parse_mode='Markdown')
+
+
+    # --------------------------------------------------------
+    # GET CURRENT MODE
+    # --------------------------------------------------------
+
+    mode = context.user_data.get(
+        "mode"
+    )
+
+    if not mode:
+
+        await update.message.reply_text(
+            "⬇️ Pehle koi option select karo.",
+            reply_markup=MAIN_KEYBOARD
+        )
+
+        return
+
+
+    # ========================================================
+    # NUMBER
+    # ========================================================
+
+    if mode == "number":
+
+        if not valid_phone(text):
+
+            await update.message.reply_text(
+                "❌ Invalid phone number."
+            )
+
+            return
+
+        result = await call_api(
+            NUMBER_API_URL,
+            text
+        )
+
+
+    # ========================================================
+    # TELEGRAM
+    # ========================================================
+
+    elif mode == "telegram":
+
+        if not valid_telegram_id(text):
+
+            await update.message.reply_text(
+                "❌ Invalid Telegram ID."
+            )
+
+            return
+
+        result = await call_api(
+            TG_API_URL,
+            text
+        )
+
+
+    # ========================================================
+    # AADHAAR
+    # ========================================================
+
+    elif mode == "aadhaar":
+
+        if not valid_aadhaar(text):
+
+            await update.message.reply_text(
+                "❌ Aadhaar must contain 12 digits."
+            )
+
+            return
+
+        result = await call_api(
+            AADHAAR_API_URL,
+            text
+        )
+
+
+    # ========================================================
+    # VEHICLE
+    # ========================================================
+
+    elif mode == "vehicle":
+
+        if not valid_vehicle(text):
+
+            await update.message.reply_text(
+                "❌ Invalid vehicle registration number."
+            )
+
+            return
+
+        result = await call_api(
+            VEHICLE_API_URL,
+            text
+        )
+
+
+    else:
+
+        result = {
+            "ok": False,
+            "error": "Invalid mode"
+        }
+
+
+    # ========================================================
+    # SEND FORMATTED RESPONSE
+    # ========================================================
+
+    output = format_response(result, mode)
+
+    # Telegram message size protection
+    if len(output) <= 4000:
+
+        await update.message.reply_text(
+            output,
+            parse_mode="HTML"
+        )
+
+    else:
+
+        # Bade response ko multiple messages me bhejo
+        chunks = []
+        current = ""
+
+        for line in output.split("\n"):
+
+            if len(current) + len(line) + 1 > 3900:
+
+                if current:
+
+                    chunks.append(current)
+
+                current = line
+
+            else:
+
+                if current:
+
+                    current += "\n" + line
+
+                else:
+
+                    current = line
+
+        if current:
+
+            chunks.append(current)
+
+        for chunk in chunks:
+
+            try:
+
+                await update.message.reply_text(
+                    chunk,
+                    parse_mode="HTML"
+                )
+
+            except Exception:
+
+                await update.message.reply_text(
+                    chunk
+                )
+
+
+    # Reset mode
+    context.user_data.pop(
+        "mode",
+        None
+    )
+
+
+# ============================================================
+# 16. ERROR HANDLER
+# ============================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "ERROR:",
+        repr(context.error)
+    )
+
+
+# ============================================================
+# 17. RUN BOT
+# ============================================================
 
 def main():
-    print("=" * 50)
-    print("Initializing database...")
-    init_db()
-    
-    if not BOT_TOKEN:
-        print("❌ BOT_TOKEN environment variable not set!")
-        print("Set it in Render Dashboard > Environment")
-        return
-    
-    # Keepalive HTTP server for Render port binding
-    print("Starting keepalive HTTP server...")
-    run_keepalive_in_thread()
-    
-    print("Starting OSINT Bot...")
-    print(f"Bot Token: {BOT_TOKEN[:15]}...")
-    print(f"Admin IDs: {ADMIN_IDS}")
-    print("=" * 50)
-    
-    try:
-        app = Application.builder().token(BOT_TOKEN).build()
-        
-        # User commands
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("menu", menu))
-        
-        # Admin commands
-        app.add_handler(CommandHandler("gencode", generate_code_command))
-        app.add_handler(CommandHandler("addcredits", add_credits_command))
-        app.add_handler(CommandHandler("sendall", send_all_credits_command))
-        app.add_handler(CommandHandler("ban", ban_user_command))
-        app.add_handler(CommandHandler("unban", unban_user_command))
-        app.add_handler(CommandHandler("userhistory", user_history_command))
-        
-        # Handlers
-        app.add_handler(CallbackQueryHandler(button_handler))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_error_handler(error_handler)
-        
-        print("✅ Bot is running! Developed by @ModAppsKing")
-        print("=" * 50)
-        app.run_polling()
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        print("Please check your BOT_TOKEN!")
+
+    if (
+        not BOT_TOKEN
+        or BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE"
+    ):
+
+        raise RuntimeError(
+            "BOT_TOKEN code me set karo."
+        )
+
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+
+    # /start
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+
+    # VERIFY button
+    app.add_handler(
+        CallbackQueryHandler(
+            verify_subscription,
+            pattern="^verify_subscription$"
+        )
+    )
+
+
+    # Normal messages/buttons
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            message_handler
+        )
+    )
+
+
+    app.add_error_handler(
+        error_handler
+    )
+
+
+    print(
+        "🤖 Bot started successfully..."
+    )
+
+
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
